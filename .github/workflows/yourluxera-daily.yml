@@ -1,0 +1,25 @@
+name: Luxera Automated Suite Run
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Triggers automatically every single day at midnight
+  workflow_dispatch: # Allows you to manually click "Run workflow" from your phone or desktop
+
+jobs:
+  build-and-audit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code Repository
+      uses: actions/checkout@v4
+
+    - name: Set Up Python Environment
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Run Core Gateway Diagnostics
+      run: python gateway_engine.py
+
+    - name: Execute Revenue Integrity Audits
+      run: python dispute_system.py
