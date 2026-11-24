@@ -1,102 +1,69 @@
-import json
-import os
+"""Offline ledger reconciliation; discrepancies are not recovered funds."""
+import argparse
+import csv
+import html
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+
+def money(value):
+    try:
+        n = Decimal(str(value))
+        if not n.is_finite() or n < 0 or n != n.quantize(Decimal("0.01")):
+            raise ValueError("Amounts must be nonnegative finite cents")
+        return n
+    except InvalidOperation as exc:
+        raise ValueError("Invalid amount") from exc
+
+def load_ledger(path):
+    result = {}
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        if not {"tx_id", "amount"} <= set(reader.fieldnames or []):
+            raise ValueError("CSV requires tx_id and amount")
+        for row in reader:
+            key = row["tx_id"].strip()
+            if not key or key in result:
+                raise ValueError("Blank or duplicate transaction ID")
+            result[key] = {"amount": money(row["amount"])}
+    return result
 
 class RevenueProtectionSystem:
-    def __init__(self):
-        print("[Initialization] Luxera Solutions: Supplier Dispute Audit Engine Active.")
-
     def analyze_ledger_leaks(self, expected_ledger, actual_ledger):
-        """
-        Audits incoming vendor transactions against expected wholesale data points to catch billing gaps.
-        """
-        discrepancies = []
-        total_recovered_leakage = 0.0
-
-        for tx_id, expected_data in expected_ledger.items():
-            if tx_id not in actual_ledger:
-                leak = expected_data["amount"]
-                discrepancies.append({
-                    "tx_id": tx_id,
-                    "reason": "Missing transaction record completely",
-                    "amount_leaked": leak
-                })
-                total_recovered_leakage += leak
+        flags = []
+        total = Decimal("0")
+        for key in sorted(set(expected_ledger) | set(actual_ledger)):
+            expected = money(expected_ledger[key]["amount"]) if key in expected_ledger else None
+            actual = money(actual_ledger[key]["amount"]) if key in actual_ledger else None
+            if expected == actual:
+                continue
+            if expected is None:
+                reason, candidate = "Unmatched actual charge; verify authorization", Decimal("0")
+            elif actual is None:
+                reason, candidate = "Missing actual record; investigate", Decimal("0")
+            elif actual > expected:
+                reason, candidate = "Potential overcharge; verify contract", actual - expected
             else:
-                actual_amount = actual_ledger[tx_id]["amount"]
-                if expected_data["amount"] != actual_amount:
-                    leak = abs(expected_data["amount"] - actual_amount)
-                    discrepancies.append({
-                        "tx_id": tx_id,
-                        "reason": f"Wholesale pricing mismatch. Expected: {expected_data['amount']}, Charged: {actual_amount}",
-                        "amount_leaked": leak
-                    })
-                    total_recovered_leakage += leak
-
-        print(f"[Audit Concluded] Identified {len(discrepancies)} operational leakage flags.")
-        return {"total_leakage_recovered": total_recovered_leakage, "flags": discrepancies}
+                reason, candidate = "Actual below expected; investigate", Decimal("0")
+            total += candidate
+            flags.append({"tx_id": key, "reason": reason, "expected": expected, "actual": actual, "potential_overcharge": candidate})
+        return {"potential_overcharges": total, "flags": flags}
 
     def compile_dispute_dashboard(self, audit_results, output_path="dispute.html"):
-        """
-        Compiles structural JSON results into a beautiful, customer-ready HTML dashboard template.
-        """
-        rows_html = ""
-        for flag in audit_results["flags"]:
-            rows_html += f"""
-            <tr>
-                <td style='padding:12px; border-bottom:1px solid #eee;'>{flag['tx_id']}</td>
-                <td style='padding:12px; border-bottom:1px solid #eee; color:#d9534f;'>{flag['reason']}</td>
-                <td style='padding:12px; border-bottom:1px solid #eee; font-weight:bold;'>${flag['amount_leaked']:.2f}</td>
-            </tr>
-            """
+        def cell(value):
+            return "<td>" + html.escape("" if value is None else str(value)) + "</td>"
+        rows = "".join("<tr>" + "".join(cell(f[k]) for k in ("tx_id","reason","expected","actual","potential_overcharge")) + "</tr>" for f in audit_results["flags"])
+        total = audit_results["potential_overcharges"]
+        page = f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Luxera Revenue Audit</title><style>body{{font:16px system-ui;color:#222;max-width:1100px;margin:auto;padding:24px}}h1{{color:#9b2860}}table{{border-collapse:collapse;width:100%}}td,th{{padding:12px;border-bottom:1px solid #c5a059;text-align:left}}.scroll{{overflow:auto}}</style><h1>Luxera Solutions | Revenue Audit</h1><p>Potential overcharges: {total:.2f}. Not recovered funds. Single-currency reconciliation; confirm contract terms and records before disputing.</p><div class="scroll"><table><thead><tr><th>Transaction</th><th>Finding</th><th>Expected</th><th>Actual</th><th>Potential overcharge</th></tr></thead><tbody>{rows}</tbody></table></div></html>"""
+        Path(output_path).write_text(page, encoding="utf-8")
 
-        html_content = f"""<!DOCTYPE html>
-        <html>
-        <head>
-            <title>Luxera Solutions - Revenue Protection Audit</title>
-            <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color:#f9f9f9; margin:0; padding:40px; }}
-                .card {{ max-width:800px; margin:0 auto; background:#fff; padding:30px; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.05); }}
-                .header {{ border-bottom:3px solid #FF1493; padding-bottom:15px; margin-bottom:20px; }}
-                h2 {{ color:#111; margin:0; font-size:24px; }}
-                .summary {{ font-size:18px; font-weight:bold; color:#FF1493; margin-bottom:20px; }}
-                table {{ width:100%; border-collapse:collapse; text-align:left; }}
-                th {{ padding:12px; background-color:#111; color:#fff; font-size:14px; text-transform:uppercase; }}
-            </style>
-        </head>
-        <body>
-            <div class='card'>
-                <div class='header'>
-                    <h2>LUXERA SOLUTIONS &bull; REVENUE PROTECTION</h2>
-                </div>
-                <div class='summary'>Total Recoverable Asset Leakage: ${audit_results['total_leakage_recovered']:.2f}</div>
-                <table>
-                    <thead>
-                        <tr><th>Transaction ID</th><th>Audit Dispute Reason</th><th>Recoverable Amount</th></tr>
-                    </thead>
-                    <tbody>
-                        {rows_html}
-                    </tbody>
-                </table>
-            </div>
-        </body>
-        </html>"""
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("expected")
+    p.add_argument("actual")
+    p.add_argument("--output", default="dispute.html")
+    a = p.parse_args()
+    engine = RevenueProtectionSystem()
+    engine.compile_dispute_dashboard(engine.analyze_ledger_leaks(load_ledger(a.expected), load_ledger(a.actual)), a.output)
 
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        print(f"[File Engine Generated] Dashboard template saved locally to: {output_path}")
-
-
-# Local verification execution loop
 if __name__ == "__main__":
-    expected = {
-        "TXN_9901": {"amount": 450.00},
-        "TXN_9902": {"amount": 1200.00}
-    }
-    actual = {
-        "TXN_9901": {"amount": 450.00},
-        "TXN_9902": {"amount": 1150.00}  # Leaking $50 on wholesale charge
-    }
-    
-    system = RevenueProtectionSystem()
-    results = system.analyze_ledger_leaks(expected, actual)
-    system.compile_dispute_dashboard(results)
+    main()
