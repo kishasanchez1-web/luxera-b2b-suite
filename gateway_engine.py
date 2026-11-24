@@ -1,74 +1,49 @@
+"""Auth0 Management API gateway. Requires a configured machine-to-machine application."""
 import json
+import os
 import re
+from urllib.request import Request, urlopen
+from urllib.parse import quote
 
 class LuxeraAuth0Gateway:
     def __init__(self, domain, client_id, client_secret):
-        self.domain = domain
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", domain or "") or not client_id or not client_secret:
+            raise ValueError("Valid Auth0 domain and credentials required")
+        self.base = "https://" + domain
         self.client_id = client_id
         self.client_secret = client_secret
-        print(f"[Initialization] Luxera B2B Suite: Auth0 Gateway connected to {self.domain}")
+        self.token = None
+
+    def _request(self, path, payload, authenticated=True):
+        headers = {"Content-Type": "application/json"}
+        if authenticated:
+            if not self.token:
+                self.token = self._request("/oauth/token", {"grant_type":"client_credentials","client_id":self.client_id,"client_secret":self.client_secret,"audience":self.base+"/api/v2/"}, False)["access_token"]
+            headers["Authorization"] = "Bearer " + self.token
+        with urlopen(Request(self.base + path, data=json.dumps(payload).encode(), headers=headers, method="POST"), timeout=30) as response:
+            body = response.read()
+            return json.loads(body) if body else None
 
     def provision_tenant_organization(self, organization_name, display_name):
-        """
-        Dynamically provisions a new isolated tenant organization inside the Auth0 workspace.
-        """
-        org_slug = re.sub(r'[^a-zA-Z0-9-]', '', organization_name.lower().replace(" ", "-"))
-        tenant_payload = {
-            "name": org_slug,
-            "display_name": display_name,
-            "branding": {
-                "logo_url": "",
-                "colors": {"primary": "#FF1493", "page_background": "#000000"}  # Dynamic hot tropical pink accents
-            },
-            "metadata": {
-                "tier": "enterprise_license",
-                "suite_version": "2.0.0",
-                "status": "active"
-            }
-        }
-        print(f"[Provisioning] Created multi-tenant infrastructure for organization: {org_slug}")
-        return json.dumps({"status": "success", "org_id": f"org_lux_{org_slug}", "config": tenant_payload}, indent=4)
+        slug = re.sub(r"[^a-z0-9_-]", "", organization_name.lower().replace(" ", "-"))
+        if not slug or len(slug) > 50:
+            raise ValueError("Invalid organization name")
+        return self._request("/api/v2/organizations", {"name":slug,"display_name":display_name})
 
     def enforce_granular_rbac(self, user_id, organization_id, target_role):
-        """
-        Loops through security states to enforce proper Role-Based Access Control limits.
-        """
-        roles_matrix = {
-            "b2b_admin": ["read:all", "write:all", "delete:tenant"],
-            "b2b_team": ["read:all", "write:all"],
-            "b2b_member": ["read:own"]
-        }
-        if target_role not in roles_matrix:
-            raise ValueError("[Security Alert] Attempted assignment of unmapped enterprise role state.")
-            
-        print(f"[RBAC Sync] Authorized User {user_id} inside {organization_id} with scope: {roles_matrix[target_role]}")
-        return {"assigned": True, "permissions_enforced": roles_matrix[target_role]}
-
+        roles = {"b2b_admin":"AUTH0_ADMIN_ROLE_ID","b2b_team":"AUTH0_TEAM_ROLE_ID","b2b_member":"AUTH0_MEMBER_ROLE_ID"}
+        if target_role not in roles:
+            raise ValueError("Unknown role")
+        role_id = os.environ.get(roles[target_role])
+        if not role_id:
+            raise ValueError("Configured Auth0 role ID required")
+        path = "/api/v2/organizations/" + quote(organization_id,safe="") + "/members/" + quote(user_id,safe="") + "/roles"
+        self._request(path, {"roles":[role_id]})
+        return {"role_assignment_accepted":True,"role_id":role_id}
 
 class PromptArchitectEngine:
-    def __init__(self):
-        print("[Initialization] Prompt Architect Optimization Framework Operational.")
-
     def trim_contextual_tokens(self, raw_user_input):
-        """
-        Optimizes LLM spending by identifying and stripping duplicate phrases and unnecessary whitespace.
-        """
-        cleaned_whitespace = " ".join(raw_user_input.split())
-        words = cleaned_whitespace.split()
-        seen = set()
-        deduplicated_words = [word for word in words if not (word in seen or seen.add(word))]
-        optimized_prompt = " ".join(deduplicated_words)
-        
-        saved_tokens = len(words) - len(deduplicated_words)
-        print(f"[Token Audit] Optimization pipeline cleared {saved_tokens} redundant token fragments.")
-        return optimized_prompt
+        return raw_user_input
 
-
-# Local verification execution loop
 if __name__ == "__main__":
-    gateway = LuxeraAuth0Gateway("://luxerasolutions.com", "client_xyz_123", "secret_abc_456")
-    gateway.provision_tenant_organization("Dream Life by Design", "Dream Life by Design™ Suite")
-    gateway.enforce_granular_rbac("usr_001", "org_lux_dream-life", "b2b_admin")
-    
-    architect = PromptArchitectEngine()
-    architect.trim_contextual_tokens("Optimize this this prompt code infrastructure immediately immediately")
+    print("Import LuxeraAuth0Gateway with configured credentials. No organizations are created automatically.")
